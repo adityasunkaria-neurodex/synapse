@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Manrope, Space_Grotesk } from "next/font/google";
+import { AuthProvider } from "@/lib/auth-context";
 import "./globals.css";
 
 const manrope = Manrope({
@@ -29,7 +30,7 @@ export default function RootLayout({
       <body
         className={`${manrope.variable} ${spaceGrotesk.variable} font-sans antialiased bg-[#150C2B] text-white min-h-screen`}
       >
-        {children}
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );
