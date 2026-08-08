@@ -1,0 +1,99 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function uid() {
+      return request.auth.uid;
+    }
+
+    function isAdmin() {
+      // Hardcoded admin UID — see SCHEMA.md / RUNBOOK.md for how to change this.
+      return isSignedIn() && request.auth.uid == "DIJPamdhyyeraXyDhZuI2WUZ5CZ2";
+    }
+
+    function isSameBatch(batch) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(uid()))
+        && get(/databases/$(database)/documents/users/$(uid())).data.batch == batch;
+    }
+
+    function onlyFieldsChanged(allowedFields) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(allowedFields);
+    }
+
+    // ---------- users/{userId} ----------
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (uid() == userId || isAdmin());
+
+      allow create: if isSignedIn() && uid() == userId;
+
+      // Self: may only ever touch currentSemester.
+      // Admin: may update anything.
+      allow update: if isAdmin()
+        || (isSignedIn() && uid() == userId && onlyFieldsChanged(['currentSemester']));
+
+      allow delete: if false;
+    }
+
+    // ---------- prompts/{promptId} ----------
+
+    match /prompts/{promptId} {
+      allow read: if isAdmin() || isSameBatch(resource.data.batch);
+      allow write: if isAdmin();
+
+      // ---------- prompts/{promptId}/responses/{userId} ----------
+
+      match /responses/{userId} {
+        allow read: if isAdmin() || (isSignedIn() && uid() == userId);
+
+        allow create: if isSignedIn()
+          && uid() == userId
+          && request.resource.data.coherenceMark == null
+          && request.resource.data.noveltyMark == null
+          && request.time < get(/databases/$(database)/documents/prompts/$(promptId)).data.closesAt;
+
+        // Admin may only touch grading fields.
+        // Owner may update before the deadline as long as grading fields are untouched.
+        allow update: if (isAdmin()
+            && onlyFieldsChanged(['coherenceMark', 'noveltyMark', 'teacherNote']))
+          || (isSignedIn()
+            && uid() == userId
+            && request.time < get(/databases/$(database)/documents/prompts/$(promptId)).data.closesAt
+            && !request.resource.data.diff(resource.data).affectedKeys()
+                .hasAny(['coherenceMark', 'noveltyMark', 'teacherNote']));
+
+        allow delete: if false;
+      }
+    }
+
+    // ---------- pendingPrompts/{promptId} ----------
+    // ASSUMPTION (no prior rules file existed to copy this from): admin has
+    // full access; the author may create their own draft and edit any field
+    // EXCEPT authorUserId/approved, which only admin may ever touch.
+    // Confirm this matches intended behavior before deploying to production.
+
+    match /pendingPrompts/{promptId} {
+      allow read: if isAdmin() || (isSignedIn() && uid() == resource.data.authorUserId);
+
+      allow create: if isSignedIn()
+        && request.resource.data.authorUserId == uid()
+        && request.resource.data.approved == false;
+
+      allow update: if isAdmin()
+        || (isSignedIn()
+          && uid() == resource.data.authorUserId
+          && resource.data.authorUserId == request.resource.data.authorUserId
+          && resource.data.approved == request.resource.data.approved);
+
+      allow delete: if isAdmin();
+    }
+  }
+}
